@@ -4,9 +4,11 @@ import threading
 import time
 from pathlib import Path
 
+from app.audit import audit_log
 from app.bandwidth import BandwidthAllocator, measure_throughput_mbps
 from app.control import ControlServer
 from app.fallback import FallbackProvisioner
+from app.metrics import Metrics
 from app.network import auto_network_config, derive_wg_public_key
 from app.payment import PaymentVerifier
 from app.pool import PoolClient, Provider, fastest_provider, mesh_cycle
@@ -115,6 +117,8 @@ class DVPNService:
             except Exception:
                 self.bandwidth_total_mbps = 100.0
         self.bandwidth = BandwidthAllocator(self.bandwidth_total_mbps, fraction_per_connection=0.5)
+        self.metrics = Metrics()
+        self.metrics.set_gauge("dvpn_bandwidth_total_mbps", self.bandwidth_total_mbps)
         self.retry_seconds = int(env("RETRY_SECONDS", "15"))
         self.running = True
         self.desired_connected = True
@@ -127,6 +131,7 @@ class DVPNService:
         self.logs.append(line)
         self.logs = self.logs[-200:]
         print(line, flush=True)
+        audit_log("service_log", message=message)
 
     def wg_down(self) -> None:
         try:
@@ -156,6 +161,7 @@ class DVPNService:
         self.desired_connected = False
         if self.last_provider_id:
             self.bandwidth.close_connection(self.last_provider_id)
+            self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
         self.wg_down()
         self.stop_socks()
         self.log("requested stop")
@@ -173,6 +179,9 @@ class DVPNService:
 
     def get_logs(self) -> dict:
         return {"ok": True, "logs": self.logs[-50:]}
+
+    def metrics_text(self) -> str:
+        return self.metrics.render_prometheus()
 
     def maybe_register_node(self) -> None:
         if self.node_registered or not self.node_register_enabled:
@@ -214,8 +223,10 @@ class DVPNService:
                 },
             )
             self.node_registered = True
+            self.metrics.inc("dvpn_node_register_success_total")
             self.log(f"registered local node in pool as {self.node_id} ({endpoint})")
         except Exception as err:
+            self.metrics.inc("dvpn_node_register_failure_total")
             self.log(f"node registration failed: {err}")
 
     def choose_pool_provider(self) -> Provider:
@@ -237,11 +248,13 @@ class DVPNService:
                 try:
                     chosen = self.choose_pool_provider()
                 except Exception as pool_err:
+                    self.metrics.inc("dvpn_fallback_attempt_total")
                     self.log(f"pool connect failed: {pool_err}; trying fallback")
                     chosen = self.fallback.provision(self.pay.token, self.user_id)
                     source = "fallback"
 
                 if not self.pay.is_active(chosen.id):
+                    self.metrics.inc("dvpn_payment_failure_total")
                     raise RuntimeError(f"Payment inactive for provider {chosen.id}")
 
                 if source == "pool":
@@ -250,19 +263,24 @@ class DVPNService:
 
                 self.last_provider_id = chosen.id
                 granted_mbps = self.bandwidth.open_connection(chosen.id)
+                self.metrics.set_gauge("dvpn_last_granted_mbps", granted_mbps)
+                self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
                 self.log(f"bandwidth grant for {chosen.id}: {granted_mbps:.2f} Mbps")
                 write_wg_config(chosen)
                 self.wg_down()
                 self.wg_up()
+                self.metrics.inc("dvpn_connect_success_total")
 
                 while self.running and self.desired_connected:
                     if self.socks_proc and self.socks_proc.poll() is not None:
                         raise RuntimeError("SOCKS server stopped unexpectedly")
                     time.sleep(10)
             except Exception as err:
+                self.metrics.inc("dvpn_connect_failure_total")
                 self.log(f"reconnect loop: {err}")
                 if self.last_provider_id:
                     self.bandwidth.close_connection(self.last_provider_id)
+                    self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
                     self.last_provider_id = None
                 self.wg_down()
                 time.sleep(self.retry_seconds)
@@ -285,6 +303,7 @@ def main() -> None:
             "payments": service.payment_flow,
             "exit": service.exit,
         },
+        metrics_fn=service.metrics_text,
     )
     control.start()
 

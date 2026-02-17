@@ -1,11 +1,12 @@
 # DVPN (Dockerized Crypto-Paid WireGuard Client)
 
-This repository provides a containerized **distributed VPN client** with:
+This repository provides a containerized **distributed VPN client** with secure pool handshake and end-to-end encryption:
 
 - Auto-discovery of provider pool
 - Fastest-provider selection
 - Randomized mesh endpoint cycling before selection
 - WireGuard end-to-end encryption
+- Secure pool handshake before provider approval/connection
 - SOCKS5 proxy for full-device/app routing
 - Taskbar tray controls: **Start / Stop / Logs / Payments / Exit**
 - Payment-gated access requiring **$9.99/month BTC** to wallet `1MUss4jmaRJ2sMtS9gyZqeRw8WrhWTsrxn`
@@ -13,10 +14,13 @@ This repository provides a containerized **distributed VPN client** with:
 ## Security Model
 
 - TLS handshake enforced for pool/payment transport (`TLSv1.2+` minimum).
+- Pool handshake sequence verifies payment token, marks provider approval, and only then activates tunnel routing.
 - Fallback orchestration calls require HTTPS (`TLSv1.2+`) and can pin a custom CA cert.
 - Local token storage uses PBKDF2 (salted key derivation) + integrity MAC.
 - WireGuard private key remains environment-provided and is only written into runtime config in-container.
 - Startup auto-configuration can detect local/public IPs and attempt UPnP UDP mapping for node publishing.
+- Audit events are emitted as structured JSON logs.
+- Runtime metrics are exposed on control endpoint `/metrics` (Prometheus format).
 
 ## Mesh Routing
 
@@ -217,6 +221,24 @@ Restore from backup (Windows PowerShell):
 .\scripts\prod_restore.ps1 .\backups\dvpn_data-YYYYMMDD-HHMMSS.tar.gz .\backups\dvpn_wg-YYYYMMDD-HHMMSS.tar.gz
 ```
 
+Rotate production secrets:
+
+```bash
+./scripts/rotate_secrets.sh .env.prod
+```
+
+Create release artifacts + checksums:
+
+```bash
+./scripts/release_bundle.sh v1.0.0
+```
+
+Sign release artifacts (cosign or gpg):
+
+```bash
+./scripts/sign_release.sh v1.0.0
+```
+
 ## Run (Dev, Auto Fallback)
 
 ```bash
@@ -256,3 +278,9 @@ Quick check after startup:
 - `BANDWIDTH_TEST_URL`: HTTPS download endpoint used for throughput sampling
 - `BANDWIDTH_SAMPLE_SECONDS`: sampling duration for throughput test
 - `BANDWIDTH_TOTAL_MBPS`: override measured total bandwidth (set `0` to auto-test)
+
+## Governance Files
+
+- `SECURITY.md`
+- `THREAT_MODEL.md`
+- `PRODUCTION_CHECKLIST.md`

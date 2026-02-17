@@ -7,3 +7,4 @@ certs/dev-server.crt
 __pycache__/
 *.pyc
 backups/
+dist/
