@@ -9,10 +9,24 @@ $EnvFile = Join-Path $DataDir ".env"
 $Container = "dvpn-node"
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-  throw "Docker Desktop is required. Install it and rerun."
+  if (Get-Command winget -ErrorAction SilentlyContinue) {
+    winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
+  } else {
+    throw "Docker Desktop is required. Install it and rerun."
+  }
 }
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+
+for ($i = 0; $i -lt 90; $i++) {
+  try {
+    docker info | Out-Null
+    break
+  } catch {
+    Start-Sleep -Seconds 2
+  }
+  if ($i -eq 89) { throw "Docker daemon did not become ready." }
+}
 
 $loaded = $true
 try { docker image inspect $Image | Out-Null } catch { $loaded = $false }

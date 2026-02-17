@@ -11,10 +11,52 @@ CONTAINER="dvpn-node"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-if ! have_cmd docker; then
-  echo "Docker is required. Install Docker Desktop/Engine and rerun." >&2
+install_docker_linux() {
+  if have_cmd docker; then return; fi
+  if have_cmd curl; then
+    curl -fsSL https://get.docker.com | sh
+  elif have_cmd wget; then
+    wget -qO- https://get.docker.com | sh
+  else
+    echo "Missing curl/wget for Docker bootstrap." >&2
+    exit 1
+  fi
+}
+
+install_docker_macos() {
+  if have_cmd docker; then return; fi
+  if have_cmd brew; then
+    brew install --cask docker
+    open -a Docker || true
+  else
+    echo "Install Docker Desktop manually, then rerun." >&2
+    exit 1
+  fi
+}
+
+wait_for_docker() {
+  for _ in $(seq 1 90); do
+    if docker info >/dev/null 2>&1; then
+      return
+    fi
+    sleep 2
+  done
+  echo "Docker daemon did not become ready." >&2
   exit 1
+}
+
+if ! have_cmd docker; then
+  case "$(uname -s)" in
+    Linux*) install_docker_linux ;;
+    Darwin*) install_docker_macos ;;
+    *)
+      echo "Unsupported OS. Install Docker manually and rerun." >&2
+      exit 1
+      ;;
+  esac
 fi
+
+wait_for_docker
 
 mkdir -p "${DATA_DIR}"
 

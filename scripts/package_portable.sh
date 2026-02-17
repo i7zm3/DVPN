@@ -14,6 +14,10 @@ docker save "${IMAGE}" | gzip -1 > "${DIST}/dvpn-node-image.tar.gz"
 
 cp scripts/portable_run.sh "${DIST}/one-click-run.sh"
 cp scripts/portable_run.ps1 "${DIST}/one-click-run.ps1"
+cp README.md "${DIST}/README.md"
+cp INSTALL.md "${DIST}/INSTALL.md"
+mkdir -p "${DIST}/docs"
+cp docs/info.html "${DIST}/docs/info.html"
 chmod +x "${DIST}/one-click-run.sh"
 
 if command -v sha256sum >/dev/null 2>&1; then

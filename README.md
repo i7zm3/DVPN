@@ -182,6 +182,9 @@ Bundle output is created in `dist/`:
 - `dist/dvpn-node-image.tar.gz`
 - `dist/one-click-run.sh`
 - `dist/one-click-run.ps1`
+- `dist/README.md`
+- `dist/INSTALL.md`
+- `dist/docs/info.html`
 
 On another device:
 
@@ -202,6 +205,7 @@ These one-click scripts:
 - load the image tar automatically
 - generate runtime `.env` if missing
 - run the node container with restart policy and persistent data
+- attempt Docker install automatically (Linux/macOS/Windows with winget)
 
 ## Docs
 
