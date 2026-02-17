@@ -123,7 +123,8 @@ function isPublicEndpoint(endpoint) {
 
 function parsePaidTokens(env) {
   try {
-    const parsed = JSON.parse(env.PAID_TOKENS_JSON || "[]");
+    const source = env.PAID_TOKENS_SECRET || env.PAID_TOKENS_JSON || "[]";
+    const parsed = JSON.parse(source);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((x) => typeof x === "string" && x.length > 0);
   } catch {
