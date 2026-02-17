@@ -1,0 +1,9 @@
+.env
+.env.prod
+certs/dev-ca.key
+certs/dev-server.key
+certs/dev-ca.crt
+certs/dev-server.crt
+__pycache__/
+*.pyc
+backups/

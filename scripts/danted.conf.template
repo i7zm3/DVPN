@@ -1,0 +1,15 @@
+logoutput: stderr
+internal: 0.0.0.0 port = ${SOCKS_PORT}
+external: wg0
+socksmethod: none
+user.privileged: root
+user.unprivileged: nobody
+
+client pass {
+  from: 0.0.0.0/0 to: 0.0.0.0/0
+}
+
+socks pass {
+  from: 0.0.0.0/0 to: 0.0.0.0/0
+  command: bind connect udpassociate
+}

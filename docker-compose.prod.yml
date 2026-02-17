@@ -1,0 +1,44 @@
+services:
+  dvpn:
+    image: dvpn:prod
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dvpn-prod
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    env_file:
+      - .env.prod
+    ports:
+      - "1080:1080/tcp"
+      - "51820:51820/udp"
+    volumes:
+      - dvpn_data:/var/lib/dvpn
+      - dvpn_wg:/etc/wireguard
+      - ./scripts:/app/scripts:ro
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${CONTROL_PORT:-8765}/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: always
+    stop_grace_period: 30s
+    mem_limit: 1g
+    cpus: 1.50
+    pids_limit: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  dvpn_data:
+  dvpn_wg:
