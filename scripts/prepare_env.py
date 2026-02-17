@@ -67,6 +67,10 @@ def main() -> None:
         "NODE_ID": f"node-{uuid.uuid4().hex[:12]}",
         "NODE_PORT": "51820",
         "ENABLE_TRAY": "false",
+        "ENDPOINT_ROTATE_SECONDS": "240",
+        "ENDPOINT_ROTATE_JITTER_SECONDS": "45",
+        "LOG_STDOUT": "false",
+        "AUDIT_ENABLED": "false",
     }
 
     placeholder_values = {"", "replace-me", "change-me"}

@@ -1,4 +1,6 @@
 import os
+import random
+import shutil
 import subprocess
 import threading
 import time
@@ -13,11 +15,12 @@ from app.network import auto_network_config, derive_wg_public_key
 from app.payment import PaymentVerifier
 from app.pool import PoolClient, Provider, fastest_provider, mesh_cycle
 from app.security import SecureTokenStore
+from app.startup import StartupManager
 from app.tray import run_tray
 
-WG_CONFIG_PATH = Path("/etc/wireguard/wg0.conf")
-DANTED_TEMPLATE_PATH = Path("/etc/danted.conf.template")
-DANTED_CONFIG_PATH = Path("/tmp/danted.conf")
+
+class RotationRequested(Exception):
+    pass
 
 
 def env(name: str, default: str | None = None) -> str:
@@ -27,30 +30,38 @@ def env(name: str, default: str | None = None) -> str:
     return value
 
 
-def write_wg_config(provider: Provider) -> None:
+def write_wg_config(provider: Provider, wg_config_path: Path) -> None:
     private_key = env("WG_PRIVATE_KEY")
     address = env("WG_ADDRESS")
-    dns = env("WG_DNS", "1.1.1.1")
+    dns = os.getenv("WG_DNS", "1.1.1.1").strip()
+    listen_port = env("NODE_PORT", "51820")
     keepalive = env("WG_PERSISTENT_KEEPALIVE", "25")
+    interface_lines = [
+        "[Interface]",
+        f"PrivateKey = {private_key}",
+        f"Address = {address}",
+        f"ListenPort = {listen_port}",
+    ]
+    if dns:
+        interface_lines.append(f"DNS = {dns}")
 
-    cfg = f"""[Interface]
-PrivateKey = {private_key}
-Address = {address}
-DNS = {dns}
-
-[Peer]
-PublicKey = {provider.public_key}
-AllowedIPs = {provider.allowed_ips}
-Endpoint = {provider.endpoint}
-PersistentKeepalive = {keepalive}
-"""
-    WG_CONFIG_PATH.write_text(cfg)
+    peer_lines = [
+        "[Peer]",
+        f"PublicKey = {provider.public_key}",
+        f"AllowedIPs = {provider.allowed_ips}",
+        f"Endpoint = {provider.endpoint}",
+        f"PersistentKeepalive = {keepalive}",
+    ]
+    cfg = "\n".join(interface_lines + [""] + peer_lines) + "\n"
+    wg_config_path.parent.mkdir(parents=True, exist_ok=True)
+    wg_config_path.write_text(cfg)
 
 
-def render_danted_config() -> None:
+def render_danted_config(danted_template_path: Path, danted_config_path: Path) -> None:
     port = env("SOCKS_PORT", "1080")
-    content = DANTED_TEMPLATE_PATH.read_text().replace("${SOCKS_PORT}", port)
-    DANTED_CONFIG_PATH.write_text(content)
+    content = danted_template_path.read_text().replace("${SOCKS_PORT}", port)
+    danted_config_path.parent.mkdir(parents=True, exist_ok=True)
+    danted_config_path.write_text(content)
 
 
 def run(cmd: list[str]) -> None:
@@ -83,11 +94,23 @@ def ensure_wg_private_key() -> None:
 
 class DVPNService:
     def __init__(self) -> None:
-        self.pool = PoolClient(env("POOL_URL"), timeout=int(env("CONNECT_TIMEOUT_SECONDS", "5")))
+        self.wg_enabled = env("ENABLE_WIREGUARD", "true").lower() == "true"
+        self.socks_enabled = env("ENABLE_SOCKS", "true").lower() == "true"
+        self.wg_quick_cmd = env("WG_QUICK_CMD", "wg-quick")
+        self.danted_cmd = env("DANTED_CMD", "danted")
+        self.wg_config_path = Path(env("WG_CONFIG_PATH", "/tmp/dvpn/wg0.conf"))
+        self.danted_template_path = Path(env("DANTED_TEMPLATE_PATH", "scripts/danted.conf.template"))
+        self.danted_config_path = Path(env("DANTED_CONFIG_PATH", "/tmp/dvpn/danted.conf"))
+
         self.user_id = env("USER_ID", "local-user")
         passphrase = env("TOKEN_STORE_PASSPHRASE", env("PAYMENT_TOKEN", "local-dev-token"))
         self.token_store = SecureTokenStore(Path(env("TOKEN_STORE_PATH", "/tmp/dvpn/token.store")), passphrase)
         loaded = self.token_store.load_token() or env("PAYMENT_TOKEN", "")
+        self.pool = PoolClient(
+            env("POOL_URL"),
+            timeout=int(env("CONNECT_TIMEOUT_SECONDS", "5")),
+            pool_token=loaded,
+        )
         self.pay = PaymentVerifier(env("PAYMENT_API_URL"), loaded, timeout=int(env("CONNECT_TIMEOUT_SECONDS", "5")))
 
         self.fallback = FallbackProvisioner(
@@ -104,6 +127,8 @@ class DVPNService:
         self.node_id = env("NODE_ID", f"node-{self.user_id}")
         self.node_public_endpoint = env("NODE_PUBLIC_ENDPOINT", "")
         self.node_registered = False
+        self.killswitch_enabled = False
+        self.startup = StartupManager("DVPN")
         self.bandwidth_test_url = env("BANDWIDTH_TEST_URL", "https://speed.cloudflare.com/__down?bytes=25000000")
         self.bandwidth_sample_seconds = int(env("BANDWIDTH_SAMPLE_SECONDS", "4"))
         self.bandwidth_total_mbps = float(env("BANDWIDTH_TOTAL_MBPS", "0"))
@@ -120,39 +145,80 @@ class DVPNService:
         self.metrics = Metrics()
         self.metrics.set_gauge("dvpn_bandwidth_total_mbps", self.bandwidth_total_mbps)
         self.retry_seconds = int(env("RETRY_SECONDS", "15"))
+        self.endpoint_rotate_seconds = int(env("ENDPOINT_ROTATE_SECONDS", "240"))
+        self.endpoint_rotate_jitter_seconds = int(env("ENDPOINT_ROTATE_JITTER_SECONDS", "45"))
+        self.rotation_rng = random.SystemRandom()
+        self.log_stdout = env("LOG_STDOUT", "false").lower() == "true"
         self.running = True
         self.desired_connected = True
         self.last_provider_id: str | None = None
-        self.logs: list[str] = []
+        self.current_pool_event: str = "uninitialized"
+        self.current_connection_event: str = "disconnected"
         self.socks_proc: subprocess.Popen | None = None
 
     def log(self, message: str) -> None:
         line = f"[dvpn] {message}"
-        self.logs.append(line)
-        self.logs = self.logs[-200:]
-        print(line, flush=True)
+        if self.log_stdout:
+            print(line, flush=True)
         audit_log("service_log", message=message)
 
+    def log_pool(self, message: str) -> None:
+        self.current_pool_event = message
+        self.log(f"pool: {message}")
+
+    def log_connection(self, message: str) -> None:
+        self.current_connection_event = message
+        self.log(f"connection: {message}")
+
+    def next_rotation_deadline(self) -> float:
+        jitter = self.rotation_rng.randint(0, max(0, self.endpoint_rotate_jitter_seconds))
+        return time.time() + max(30, self.endpoint_rotate_seconds + jitter)
+
+    def subscription_active(self) -> bool:
+        self.pool.set_token(self.pay.token)
+        return self.pay.is_active("pool-access")
+
     def wg_down(self) -> None:
+        if not self.wg_enabled:
+            return
+        if shutil.which(self.wg_quick_cmd) is None:
+            self.log(f"wireguard disabled: missing command {self.wg_quick_cmd}")
+            self.wg_enabled = False
+            return
         try:
-            run(["wg-quick", "down", "wg0"])
+            run([self.wg_quick_cmd, "down", str(self.wg_config_path)])
         except subprocess.CalledProcessError:
             pass
 
     def wg_up(self) -> None:
-        run(["wg-quick", "up", "wg0"])
+        if not self.wg_enabled:
+            return
+        if shutil.which(self.wg_quick_cmd) is None:
+            self.log(f"wireguard disabled: missing command {self.wg_quick_cmd}")
+            self.wg_enabled = False
+            return
+        run([self.wg_quick_cmd, "up", str(self.wg_config_path)])
 
     def start_socks(self) -> None:
+        if not self.socks_enabled:
+            return
+        if shutil.which(self.danted_cmd) is None:
+            self.log(f"socks disabled: missing command {self.danted_cmd}")
+            self.socks_enabled = False
+            return
         if self.socks_proc and self.socks_proc.poll() is None:
             return
-        render_danted_config()
-        self.socks_proc = subprocess.Popen(["danted", "-f", str(DANTED_CONFIG_PATH), "-D"])
+        render_danted_config(self.danted_template_path, self.danted_config_path)
+        self.socks_proc = subprocess.Popen([self.danted_cmd, "-f", str(self.danted_config_path), "-D"])
 
     def stop_socks(self) -> None:
         if self.socks_proc and self.socks_proc.poll() is None:
             self.socks_proc.terminate()
 
     def start(self) -> dict:
+        if self.killswitch_enabled:
+            self.log("start blocked: killswitch enabled")
+            return {"ok": False, "killswitch_enabled": True}
         self.desired_connected = True
         self.log("requested start")
         return {"ok": True}
@@ -164,24 +230,65 @@ class DVPNService:
             self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
         self.wg_down()
         self.stop_socks()
-        self.log("requested stop")
+        self.log_connection("stopped")
         return {"ok": True}
 
     def payment_flow(self) -> dict:
         session = self.pay.begin_checkout(user_id=self.user_id)
         return {"ok": True, "checkout": session}
 
+    def restart(self) -> dict:
+        if self.killswitch_enabled:
+            return {"ok": False, "killswitch_enabled": True}
+        self.log_connection("restarting")
+        self.wg_down()
+        self.stop_socks()
+        self.last_provider_id = None
+        self.desired_connected = True
+        return {"ok": True}
+
+    def toggle_killswitch(self) -> dict:
+        self.killswitch_enabled = not self.killswitch_enabled
+        if self.killswitch_enabled:
+            self.desired_connected = False
+            self.wg_down()
+            self.stop_socks()
+        self.log_connection(f"killswitch={self.killswitch_enabled}")
+        return {"ok": True, "killswitch_enabled": self.killswitch_enabled}
+
+    def toggle_start_on_boot(self) -> dict:
+        desired = not self.startup.is_enabled()
+        self.startup.set_enabled(desired)
+        current = self.startup.is_enabled()
+        return {"ok": True, "start_on_boot": current}
+
     def exit(self) -> dict:
         self.running = False
         self.stop()
-        self.log("requested exit")
+        self.log_connection("exit")
         return {"ok": True}
 
     def get_logs(self) -> dict:
-        return {"ok": True, "logs": self.logs[-50:]}
+        return {
+            "ok": True,
+            "logs": [
+                f"[dvpn] pool: {self.current_pool_event}",
+                f"[dvpn] connection: {self.current_connection_event}",
+            ],
+        }
 
     def metrics_text(self) -> str:
         return self.metrics.render_prometheus()
+
+    def status(self) -> dict:
+        return {
+            "ok": True,
+            "desired_connected": self.desired_connected,
+            "killswitch_enabled": self.killswitch_enabled,
+            "start_on_boot": self.startup.is_enabled(),
+            "pool": self.current_pool_event,
+            "connection": self.current_connection_event,
+        }
 
     def maybe_register_node(self) -> None:
         if self.node_registered or not self.node_register_enabled:
@@ -189,7 +296,7 @@ class DVPNService:
         private_key = env("WG_PRIVATE_KEY", "")
         public_key = derive_wg_public_key(private_key) if private_key else None
         if not public_key:
-            self.log("node registration skipped: unable to derive WireGuard public key")
+            self.log_pool("node registration skipped: unable to derive WireGuard public key")
             return
 
         endpoint = self.node_public_endpoint
@@ -205,7 +312,7 @@ class DVPNService:
                 endpoint = f"{public_ip}:{self.node_port}"
 
         if not endpoint:
-            self.log("node registration skipped: no public endpoint detected")
+            self.log_pool("node registration skipped: no public endpoint detected")
             return
 
         try:
@@ -224,13 +331,16 @@ class DVPNService:
             )
             self.node_registered = True
             self.metrics.inc("dvpn_node_register_success_total")
-            self.log(f"registered local node in pool as {self.node_id} ({endpoint})")
+            self.log_pool(f"registered local node as {self.node_id} ({endpoint})")
         except Exception as err:
             self.metrics.inc("dvpn_node_register_failure_total")
-            self.log(f"node registration failed: {err}")
+            self.log_pool(f"node registration failed: {err}")
 
     def choose_pool_provider(self) -> Provider:
         providers = self.pool.fetch_providers()
+        providers = [p for p in providers if p.id != self.node_id]
+        if not providers:
+            raise RuntimeError("No non-self providers available in pool")
         ordered = mesh_cycle(providers, previous_provider_id=self.last_provider_id)
         sample_size = min(max(self.mesh_sample_size, 1), len(ordered))
         sampled = ordered[:sample_size]
@@ -241,7 +351,22 @@ class DVPNService:
             if not self.desired_connected:
                 time.sleep(1)
                 continue
+            if self.killswitch_enabled:
+                time.sleep(1)
+                continue
             try:
+                if not self.subscription_active():
+                    self.metrics.inc("dvpn_payment_failure_total")
+                    self.log_pool("payment inactive: pool access blocked")
+                    if self.last_provider_id:
+                        self.bandwidth.close_connection(self.last_provider_id)
+                        self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
+                        self.last_provider_id = None
+                    self.wg_down()
+                    self.stop_socks()
+                    time.sleep(self.retry_seconds)
+                    continue
+
                 self.maybe_register_node()
                 self.start_socks()
                 source = "pool"
@@ -249,7 +374,7 @@ class DVPNService:
                     chosen = self.choose_pool_provider()
                 except Exception as pool_err:
                     self.metrics.inc("dvpn_fallback_attempt_total")
-                    self.log(f"pool connect failed: {pool_err}; trying fallback")
+                    self.log_pool(f"pool connect failed: {pool_err}; trying fallback")
                     chosen = self.fallback.provision(self.pay.token, self.user_id)
                     source = "fallback"
 
@@ -265,19 +390,34 @@ class DVPNService:
                 granted_mbps = self.bandwidth.open_connection(chosen.id)
                 self.metrics.set_gauge("dvpn_last_granted_mbps", granted_mbps)
                 self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
-                self.log(f"bandwidth grant for {chosen.id}: {granted_mbps:.2f} Mbps")
-                write_wg_config(chosen)
-                self.wg_down()
-                self.wg_up()
+                self.log_pool(f"using provider {chosen.id} ({source})")
+                self.log_connection(f"connected to {chosen.id}; grant={granted_mbps:.2f}Mbps")
+                if self.wg_enabled:
+                    write_wg_config(chosen, self.wg_config_path)
+                    self.wg_down()
+                    self.wg_up()
+                else:
+                    self.log_connection("wireguard skipped (ENABLE_WIREGUARD=false)")
                 self.metrics.inc("dvpn_connect_success_total")
+                rotate_at = self.next_rotation_deadline()
 
                 while self.running and self.desired_connected:
                     if self.socks_proc and self.socks_proc.poll() is not None:
                         raise RuntimeError("SOCKS server stopped unexpectedly")
+                    if time.time() >= rotate_at:
+                        raise RotationRequested("endpoint rotation interval reached")
                     time.sleep(10)
+            except RotationRequested as rotation:
+                self.log_connection(str(rotation))
+                if self.last_provider_id:
+                    self.bandwidth.close_connection(self.last_provider_id)
+                    self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
+                    self.last_provider_id = None
+                self.wg_down()
+                continue
             except Exception as err:
                 self.metrics.inc("dvpn_connect_failure_total")
-                self.log(f"reconnect loop: {err}")
+                self.log_connection(f"reconnect loop: {err}")
                 if self.last_provider_id:
                     self.bandwidth.close_connection(self.last_provider_id)
                     self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
@@ -299,24 +439,28 @@ def main() -> None:
         {
             "start": service.start,
             "stop": service.stop,
+            "restart": service.restart,
             "logs": service.get_logs,
             "payments": service.payment_flow,
+            "killswitch": service.toggle_killswitch,
+            "start_on_boot": service.toggle_start_on_boot,
             "exit": service.exit,
         },
         metrics_fn=service.metrics_text,
+        status_fn=service.status,
     )
     control.start()
 
     tray_enabled = env("ENABLE_TRAY", "false").lower() == "true"
-    if tray_enabled:
-        threading.Thread(
-            target=run_tray,
-            args=(f"http://{control_host}:{control_port}", payment_portal_url),
-            daemon=True,
-        ).start()
-
     try:
-        service.loop()
+        if tray_enabled:
+            worker = threading.Thread(target=service.loop, daemon=True)
+            worker.start()
+            run_tray(f"http://{control_host}:{control_port}", payment_portal_url)
+            service.exit()
+            worker.join(timeout=5)
+        else:
+            service.loop()
     finally:
         control.stop()
         service.stop()

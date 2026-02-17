@@ -11,17 +11,20 @@ class ControlServer:
         port: int,
         actions: dict[str, Callable[[], dict]],
         metrics_fn: Callable[[], str] | None = None,
+        status_fn: Callable[[], dict] | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.actions = actions
         self.metrics_fn = metrics_fn
+        self.status_fn = status_fn
         self.httpd: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
     def start(self) -> None:
         actions = self.actions
         metrics_fn = self.metrics_fn
+        status_fn = self.status_fn
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -37,6 +40,14 @@ class ControlServer:
                     payload = metrics_fn().encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/plain; version=0.0.4")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                if self.path.strip("/") == "status" and status_fn is not None:
+                    payload = json.dumps(status_fn()).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
                     self.wfile.write(payload)

@@ -23,7 +23,9 @@ class FallbackProvisioner:
         if not self.enabled:
             raise RuntimeError("Fallback provisioning disabled")
         if not self.orchestrator_url.startswith("https://"):
-            raise RuntimeError("Fallback orchestrator URL must use https://")
+            allowed_local_http = self.orchestrator_url.startswith("http://127.0.0.1") or self.orchestrator_url.startswith("http://localhost")
+            if not allowed_local_http:
+                raise RuntimeError("Fallback orchestrator URL must use https://")
         if not self.script_path.exists():
             raise RuntimeError(f"Fallback script missing: {self.script_path}")
 

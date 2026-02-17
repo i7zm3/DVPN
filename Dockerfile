@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-bookworm
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -6,6 +6,7 @@ RUN apt-get update \
         curl \
         dante-server \
         iproute2 \
+        iptables \
         miniupnpc \
         wireguard-tools \
     && rm -rf /var/lib/apt/lists/*

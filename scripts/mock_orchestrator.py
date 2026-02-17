@@ -105,12 +105,14 @@ def main() -> None:
     port = int(os.getenv("MOCK_PORT", "9443"))
     cert = os.getenv("MOCK_TLS_CERT", "/certs/dev-server.crt")
     key = os.getenv("MOCK_TLS_KEY", "/certs/dev-server.key")
+    tls_enabled = os.getenv("MOCK_TLS_ENABLED", "true").lower() == "true"
 
     server = ThreadingHTTPServer((host, port), Handler)
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(certfile=cert, keyfile=key)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    if tls_enabled:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(certfile=cert, keyfile=key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
     server.serve_forever()
 
 

@@ -1,0 +1,15 @@
+name = "dvpn-worker"
+main = "src/index.js"
+compatibility_date = "2026-02-17"
+workers_dev = true
+
+[vars]
+PUBLIC_BASE_URL = "https://dvpn-worker.<your-account>.workers.dev"
+REQUIRED_WALLET = "1MUss4jmaRJ2sMtS9gyZqeRw8WrhWTsrxn"
+REQUIRED_INTERVAL = "monthly"
+REQUIRED_PRICE_USD = "9.99"
+PAID_TOKENS_JSON = "[]"
+PROVIDERS_JSON = """[
+  {"id":"node-wga","endpoint":"8.44.146.195:51820","public_key":"x5j0ufRvsSbX0iq85YfG6GakDkVjIfEzthpQTyMVbUw=","allowed_ips":"0.0.0.0/0","health":"ok"},
+  {"id":"node-wgb","endpoint":"8.44.146.195:51821","public_key":"Uw+WPiE05CPiIPEcF36t6B2ryeFyQaQ/Yim4I+raiT0=","allowed_ips":"0.0.0.0/0","health":"ok"}
+]"""

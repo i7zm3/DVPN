@@ -4,3 +4,7 @@ __pycache__
 *.pyc
 certs
 tests
+.venv
+
+# portable bundle artifacts
+dist

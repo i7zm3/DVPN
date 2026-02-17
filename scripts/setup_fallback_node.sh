@@ -7,8 +7,10 @@ if [[ -z "${FALLBACK_ORCHESTRATOR_URL:-}" ]]; then
 fi
 
 if [[ "${FALLBACK_ORCHESTRATOR_URL}" != https://* ]]; then
-  echo "FALLBACK_ORCHESTRATOR_URL must use https://" >&2
-  exit 1
+  if [[ "${FALLBACK_ORCHESTRATOR_URL}" != http://127.0.0.1* && "${FALLBACK_ORCHESTRATOR_URL}" != http://localhost* ]]; then
+    echo "FALLBACK_ORCHESTRATOR_URL must use https:// (http://localhost is allowed for local dev only)" >&2
+    exit 1
+  fi
 fi
 
 if [[ -z "${PAYMENT_TOKEN:-}" ]]; then
@@ -39,13 +41,15 @@ curl_args=(
   --silent
   --show-error
   --fail
-  --tlsv1.2
-  --proto '=https'
   -H 'Content-Type: application/json'
   -X POST
   -d "${payload}"
   "${FALLBACK_ORCHESTRATOR_URL%/}/provision"
 )
+
+if [[ "${FALLBACK_ORCHESTRATOR_URL}" == https://* ]]; then
+  curl_args+=(--tlsv1.2 --proto '=https')
+fi
 
 if [[ -n "${FALLBACK_CA_CERT:-}" ]]; then
   curl_args+=(--cacert "${FALLBACK_CA_CERT}")

@@ -1,6 +1,5 @@
 import json
 import ssl
-import urllib.parse
 import urllib.request
 
 REQUIRED_BTC_WALLET = "1MUss4jmaRJ2sMtS9gyZqeRw8WrhWTsrxn"
@@ -20,15 +19,19 @@ class PaymentVerifier:
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": "DVPN/1.0"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _checkout_url(self, suffix: str) -> str:
+        base = self.verify_url.rstrip("/")
+        return f"{base}/{suffix}"
+
     def begin_checkout(self, user_id: str) -> dict:
         return self._request(
-            urllib.parse.urljoin(self.verify_url, "checkout/start"),
+            self._checkout_url("checkout/start"),
             {
                 "user_id": user_id,
                 "required_wallet": REQUIRED_BTC_WALLET,
@@ -39,7 +42,7 @@ class PaymentVerifier:
 
     def poll_checkout(self, session_id: str) -> dict:
         return self._request(
-            urllib.parse.urljoin(self.verify_url, "checkout/status"),
+            self._checkout_url("checkout/status"),
             {
                 "session_id": session_id,
                 "required_wallet": REQUIRED_BTC_WALLET,

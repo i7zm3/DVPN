@@ -14,17 +14,27 @@ class TestPoolSecurityAndMesh(unittest.TestCase):
     def test_validate_provider_checks_endpoint_and_cidrs(self):
         provider = Provider(
             id="node-a",
-            endpoint="10.0.0.1:51820",
+            endpoint="8.8.8.8:51820",
             public_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             allowed_ips="0.0.0.0/0,::/0",
         )
         validate_provider(provider)
 
+    def test_validate_provider_rejects_private_endpoint(self):
+        provider = Provider(
+            id="node-a",
+            endpoint="10.0.0.1:51820",
+            public_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            allowed_ips="0.0.0.0/0,::/0",
+        )
+        with self.assertRaises(ValueError):
+            validate_provider(provider)
+
     def test_mesh_cycle_deprioritizes_previous_provider(self):
         providers = [
-            Provider("a", "10.0.0.1:51820", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "0.0.0.0/0"),
-            Provider("b", "10.0.0.2:51820", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "0.0.0.0/0"),
-            Provider("c", "10.0.0.3:51820", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "0.0.0.0/0"),
+            Provider("a", "8.8.8.8:51820", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "0.0.0.0/0"),
+            Provider("b", "1.1.1.1:51820", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "0.0.0.0/0"),
+            Provider("c", "9.9.9.9:51820", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "0.0.0.0/0"),
         ]
         ordered = mesh_cycle(providers, previous_provider_id="b", rng=random.Random(0))
         self.assertEqual({p.id for p in ordered}, {"a", "b", "c"})

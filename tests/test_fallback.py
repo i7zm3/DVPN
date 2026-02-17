@@ -15,7 +15,7 @@ class TestFallbackProvisioner(unittest.TestCase):
                     """\
                     #!/usr/bin/env bash
                     set -euo pipefail
-                    printf '%s' '{"id":"fallback-1","endpoint":"10.8.0.1:51820","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","allowed_ips":"0.0.0.0/0,::/0"}'
+                    printf '%s' '{"id":"fallback-1","endpoint":"8.8.8.8:51820","public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","allowed_ips":"0.0.0.0/0,::/0"}'
                     """
                 )
             )
@@ -29,7 +29,7 @@ class TestFallbackProvisioner(unittest.TestCase):
             provider = provisioner.provision(payment_token="tok", user_id="user-1")
 
         self.assertEqual(provider.id, "fallback-1")
-        self.assertEqual(provider.endpoint, "10.8.0.1:51820")
+        self.assertEqual(provider.endpoint, "8.8.8.8:51820")
 
     def test_requires_https_orchestrator(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,13 +1,14 @@
 import base64
 import binascii
 import json
+import os
 import random
 import socket
 import ssl
 import time
 import urllib.request
 from dataclasses import dataclass
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 
 
 @dataclass
@@ -19,14 +20,27 @@ class Provider:
 
 
 class PoolClient:
-    def __init__(self, pool_url: str, timeout: int = 5) -> None:
+    def __init__(self, pool_url: str, timeout: int = 5, pool_token: str = "") -> None:
         self.pool_url = pool_url
         self.timeout = timeout
+        self.pool_token = pool_token
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
+    def set_token(self, token: str) -> None:
+        self.pool_token = token
+
+    def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {"User-Agent": "DVPN/1.0"}
+        if self.pool_token:
+            headers["X-DVPN-Token"] = self.pool_token
+        if extra:
+            headers.update(extra)
+        return headers
+
     def fetch_providers(self) -> list[Provider]:
-        with urllib.request.urlopen(self.pool_url, timeout=self.timeout, context=self.ssl_context) as response:
+        req = urllib.request.Request(self.pool_url, headers=self._headers())
+        with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context) as response:
             raw = json.loads(response.read().decode("utf-8"))
 
         providers = []
@@ -48,7 +62,7 @@ class PoolClient:
         req = urllib.request.Request(
             self.pool_url.rstrip("/") + "/approve",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=self._headers({"Content-Type": "application/json"}),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context):
@@ -72,11 +86,52 @@ class PoolClient:
         req = urllib.request.Request(
             self.pool_url.rstrip("/") + "/register",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._headers({"Content-Type": "application/json"}),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context):
             return
+
+
+def _allow_private_endpoints() -> bool:
+    return os.getenv("ALLOW_PRIVATE_ENDPOINTS", "false").lower() == "true"
+
+
+def _split_endpoint(endpoint: str) -> tuple[str, int]:
+    if endpoint.startswith("["):
+        host, remainder = endpoint.split("]", 1)
+        host = host[1:]
+        if not remainder.startswith(":"):
+            raise ValueError("Invalid endpoint format")
+        port_text = remainder[1:]
+    else:
+        host, port_text = endpoint.rsplit(":", 1)
+
+    if not host:
+        raise ValueError("Invalid endpoint host")
+    port = int(port_text)
+    if port < 1 or port > 65535:
+        raise ValueError("Invalid endpoint port")
+    return host, port
+
+
+def _is_disallowed_host(host: str) -> bool:
+    lowered = host.lower()
+    if lowered in {"localhost", "ip6-localhost"} or lowered.endswith(".local"):
+        return True
+
+    try:
+        ip = ip_address(host)
+    except ValueError:
+        return False
+
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
 
 
 def validate_public_key(public_key: str) -> bool:
@@ -88,12 +143,13 @@ def validate_public_key(public_key: str) -> bool:
 
 
 def validate_provider(provider: Provider) -> None:
-    host, port_text = provider.endpoint.rsplit(":", 1)
-    if not host:
-        raise ValueError(f"Invalid provider endpoint host for {provider.id}")
-    port = int(port_text)
-    if port < 1 or port > 65535:
-        raise ValueError(f"Invalid provider endpoint port for {provider.id}")
+    try:
+        host, _ = _split_endpoint(provider.endpoint)
+    except ValueError as err:
+        raise ValueError(f"Invalid provider endpoint for {provider.id}: {err}") from err
+
+    if not _allow_private_endpoints() and _is_disallowed_host(host):
+        raise ValueError(f"Provider endpoint must be public-routable for {provider.id}")
 
     if not validate_public_key(provider.public_key):
         raise ValueError(f"Invalid WireGuard public key for provider {provider.id}")
@@ -121,11 +177,11 @@ def mesh_cycle(
 
 
 def measure_latency(endpoint: str, timeout: int = 2) -> float:
-    host, port = endpoint.rsplit(":", 1)
+    host, port = _split_endpoint(endpoint)
     start = time.perf_counter()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(timeout)
-        sock.sendto(b"\x00", (host, int(port)))
+        sock.sendto(b"\x00", (host, port))
     return (time.perf_counter() - start) * 1000
 
 

@@ -14,37 +14,7 @@ services:
     env_file:
       - .env
     environment:
-      SSL_CERT_FILE: /app/certs/dev-ca.crt
-      POOL_URL: https://127.0.0.1:9/providers
-      PAYMENT_API_URL: https://mock-orchestrator:9443/verify
-      PAYMENT_PORTAL_URL: https://mock-orchestrator:9443/portal
-      FALLBACK_ENABLED: "true"
       FALLBACK_SCRIPT_PATH: /app/scripts/setup_fallback_node.sh
-      FALLBACK_ORCHESTRATOR_URL: https://mock-orchestrator:9443
-      FALLBACK_CA_CERT: /app/certs/dev-ca.crt
-      AUTO_NETWORK_CONFIG: "true"
-      UPNP_ENABLED: "true"
-      NODE_REGISTER_ENABLED: "true"
-      NODE_PORT: "51820"
-    depends_on:
-      - mock-orchestrator
     restart: unless-stopped
-
-  mock-orchestrator:
-    image: python:3.12-slim
-    container_name: dvpn-mock-orchestrator
-    working_dir: /srv
-    volumes:
-      - ./scripts/mock_orchestrator.py:/srv/mock_orchestrator.py:ro
-      - ./certs:/certs:ro
-    command:
-      - python
-      - /srv/mock_orchestrator.py
-    environment:
-      MOCK_HOST: 0.0.0.0
-      MOCK_PORT: "9443"
-      MOCK_TLS_CERT: /certs/dev-server.crt
-      MOCK_TLS_KEY: /certs/dev-server.key
-    ports:
-      - "9443:9443"
-    restart: unless-stopped
+    logging:
+      driver: "none"

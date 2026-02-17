@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DVPN Architecture & Security</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #111a2d;
+      --panel2: #16243e;
+      --text: #e9f0ff;
+      --muted: #a9bddf;
+      --ok: #37d67a;
+      --warn: #ffd166;
+      --line: #243657;
+      --accent: #4ecdc4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "SF Pro Text", "Noto Sans", sans-serif;
+      color: var(--text);
+      background: radial-gradient(1200px 600px at 90% -5%, #1f3a6f 0%, var(--bg) 60%);
+      line-height: 1.45;
+    }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 28px 20px 56px; }
+    .hero {
+      background: linear-gradient(145deg, var(--panel), var(--panel2));
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 12px 36px rgba(0,0,0,.35);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.9rem; }
+    h2 { margin: 26px 0 10px; font-size: 1.2rem; }
+    p, li { color: var(--muted); }
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      margin-right: 8px;
+      margin-bottom: 8px;
+      border: 1px solid var(--line);
+      color: var(--text);
+      background: rgba(255,255,255,.03);
+      font-size: .86rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255,255,255,.02);
+      padding: 14px;
+    }
+    code { color: var(--text); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>DVPN: Distributed Mesh With End-to-End Encryption</h1>
+      <p>
+        Each install is a WireGuard node. Nodes join a distributed pool, perform secure payment and pool handshake,
+        then rotate peers on a schedule to reduce route stickiness.
+      </p>
+      <div>
+        <span class="pill">Distributed Node Pool</span>
+        <span class="pill">WireGuard E2E Encryption</span>
+        <span class="pill">Secure Pool Handshake</span>
+        <span class="pill">Payment Gate</span>
+        <span class="pill">Ephemeral Runtime State</span>
+      </div>
+    </section>
+
+    <h2>Methodology</h2>
+    <div class="grid">
+      <article class="card">
+        <h3>1. Paid Access Gate</h3>
+        <p>Client verifies active subscription before any pool registration, discovery, or approval call.</p>
+      </article>
+      <article class="card">
+        <h3>2. Pool Handshake</h3>
+        <p>Client selects randomized mesh endpoints, validates provider records, then marks approved provider only after payment checks.</p>
+      </article>
+      <article class="card">
+        <h3>3. Tunnel Bring-Up</h3>
+        <p>WireGuard is brought up with per-node listen port, peer key validation, and persistent keepalive for NAT stability.</p>
+      </article>
+      <article class="card">
+        <h3>4. Seamless Rotation</h3>
+        <p>Endpoints rotate every few minutes with jitter. If path quality fails, runtime recycles to next candidate automatically.</p>
+      </article>
+    </div>
+
+    <h2>Security Guarantees</h2>
+    <ul>
+      <li><strong class="ok">Transport security:</strong> TLS for pool/payment/orchestrator APIs.</li>
+      <li><strong class="ok">Data-plane security:</strong> WireGuard end-to-end encrypted tunnel.</li>
+      <li><strong class="ok">No long-term logs:</strong> runtime keeps only current pool + current connection state by default.</li>
+      <li><strong class="ok">No private endpoint leakage:</strong> private/local peer endpoints blocked unless explicit test override.</li>
+      <li><strong class="ok">Node mode:</strong> each client acts as a WireGuard server-capable node (<code>ListenPort</code>).</li>
+    </ul>
+
+    <h2>Install</h2>
+    <p>See <code>INSTALL.md</code> for one-click Linux/macOS/Windows and portable distribution usage.</p>
+
+    <h2>Operational Notes</h2>
+    <ul>
+      <li class="warn">For real bidirectional tunnel traffic, peers must be publicly reachable or on compatible NAT/overlay paths.</li>
+      <li>For internal CI validation, run <code>./scripts/local_handshake_test.sh</code>.</li>
+    </ul>
+  </main>
+</body>
+</html>
