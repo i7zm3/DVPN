@@ -28,14 +28,25 @@ def detect_local_ip() -> str | None:
 def detect_public_ip(timeout: int = 5) -> str | None:
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    # Prefer Cloudflare trace on our control-plane domain so strict firewall allowlists
+    # still permit public IP detection during startup.
     urls = [
+        "https://api.dvpn.lol/cdn-cgi/trace",
         "https://api.ipify.org?format=json",
         "https://ifconfig.co/json",
     ]
     for url in urls:
         try:
             with urllib.request.urlopen(url, timeout=timeout, context=context) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                body = response.read().decode("utf-8", errors="replace")
+            if "cdn-cgi/trace" in url:
+                for line in body.splitlines():
+                    if line.startswith("ip="):
+                        ip = line.split("=", 1)[1].strip()
+                        if ip:
+                            return ip
+                continue
+            payload = json.loads(body)
             ip = payload.get("ip")
             if isinstance(ip, str) and ip:
                 return ip

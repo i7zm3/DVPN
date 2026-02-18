@@ -29,6 +29,11 @@ TOKEN_STORE_PATH="${TOKEN_STORE_PATH:-${RUNTIME_DIR}/token.store}"
 mkdir -p "$(dirname "${WG_CONFIG_PATH}")" "$(dirname "${TOKEN_STORE_PATH}")"
 chmod 700 "$(dirname "${WG_CONFIG_PATH}")" "$(dirname "${TOKEN_STORE_PATH}")" 2>/dev/null || true
 
+# If invoked via sudo, ensure the runtime dir is usable for later non-root runs too.
+if [[ "${EUID}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+  chown -R "${SUDO_UID}:${SUDO_GID:-${SUDO_UID}}" "${RUNTIME_DIR}" 2>/dev/null || true
+fi
+
 # On disconnect/stop, restore host forwarding rules changed by provider setup.
 export PROVIDER_FORWARD_DISABLE_CMD="${PROVIDER_FORWARD_DISABLE_CMD:-${ROOT}/scripts/provider_disable_forwarding.sh}"
 export PROVIDER_FORWARD_ENABLE_CMD="${PROVIDER_FORWARD_ENABLE_CMD:-${ROOT}/scripts/provider_enable_forwarding.sh}"

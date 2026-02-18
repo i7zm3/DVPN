@@ -13,6 +13,7 @@ WG_FWMARK="${WG_FWMARK:-}"
 STATE_FILE="${DVPN_STRICT_FW_STATE_FILE:-/tmp/dvpn-strict-firewall.state}"
 ALLOW_CONTROL_PLANE="${STRICT_FW_ALLOW_CONTROL_PLANE:-true}"
 ALLOW_DNS="${STRICT_FW_ALLOW_DNS:-true}"
+ALLOW_UPNP="${STRICT_FW_ALLOW_UPNP:-true}"
 
 if [[ -z "${WAN_IFACE}" ]]; then
   WAN_IFACE="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')"
@@ -80,6 +81,17 @@ iptables -A DVPN_STRICT_OUTPUT -o lo -j ACCEPT
 iptables -A DVPN_STRICT_OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 iptables -A DVPN_STRICT_OUTPUT -o "${WG_IFACE}" -j ACCEPT
 iptables -A DVPN_STRICT_OUTPUT -m mark --mark "${WG_FWMARK}" -j ACCEPT
+
+if [[ "${ALLOW_UPNP,,}" == "true" ]]; then
+  # Allow UPnP discovery/control (local only) so nodes can map ports at startup.
+  GW_IP="$(ip route show default 2>/dev/null | awk '{print $3}' | head -n1)"
+  if [[ -n "${GW_IP}" ]]; then
+    iptables -A DVPN_STRICT_OUTPUT -o "${WAN_IFACE}" -d "${GW_IP}" -p tcp -m multiport --dports 80,443,5000,49152:65535 -j ACCEPT
+    iptables -A DVPN_STRICT_OUTPUT -o "${WAN_IFACE}" -d "${GW_IP}" -p udp -m multiport --dports 1900,5351,5353 -j ACCEPT
+  fi
+  # SSDP multicast
+  iptables -A DVPN_STRICT_OUTPUT -o "${WAN_IFACE}" -d 239.255.255.250 -p udp --dport 1900 -j ACCEPT
+fi
 
 if [[ "${ALLOW_DNS,,}" == "true" ]]; then
   # Allow DNS to configured resolvers so control-plane host resolution works before tunnel is up.
