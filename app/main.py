@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from ipaddress import ip_address
 from pathlib import Path
 
@@ -186,6 +187,8 @@ class DVPNService:
         self.current_pool_event: str = "uninitialized"
         self.current_connection_event: str = "disconnected"
         self.current_phase: str = "idle"
+        # In-memory only, bounded. This is used for debugging via /logs without persisting anything.
+        self.recent_logs: deque[str] = deque(maxlen=200)
         self.socks_proc: subprocess.Popen | None = None
         self.last_detected_public_ip: str | None = None
         self.last_detected_local_ip: str | None = None
@@ -201,6 +204,7 @@ class DVPNService:
 
     def log(self, message: str) -> None:
         line = f"[dvpn] {message}"
+        self.recent_logs.append(line)
         if self.log_stdout:
             print(line, flush=True)
         audit_log("service_log", message=message)
@@ -395,10 +399,7 @@ class DVPNService:
     def get_logs(self) -> dict:
         return {
             "ok": True,
-            "logs": [
-                f"[dvpn] pool: {self.current_pool_event}",
-                f"[dvpn] connection: {self.current_connection_event}",
-            ],
+            "logs": list(self.recent_logs)[-80:],
         }
 
     def metrics_text(self) -> str:
@@ -463,7 +464,8 @@ class DVPNService:
             if self.upnp_enabled and not upnp_mapped:
                 self.log_pool("network warning: upnp mapping unavailable")
             if not endpoint and public_ip:
-                endpoint = f"{public_ip}:{self.node_port}"
+                # If public_ip is IPv6, wrap in brackets for host:port formatting.
+                endpoint = f"[{public_ip}]:{self.node_port}" if ":" in public_ip else f"{public_ip}:{self.node_port}"
 
         if not endpoint:
             self.log_pool("node registration skipped: no public endpoint detected")
