@@ -45,6 +45,60 @@ wait_for_docker() {
   exit 1
 }
 
+detect_wan_iface() {
+  ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
+}
+
+maybe_enable_provider_forwarding() {
+  if [[ "${ENABLE_PROVIDER_FORWARDING:-true}" != "true" ]]; then
+    return
+  fi
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    return
+  fi
+  local iface
+  iface="$(detect_wan_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    echo "Provider forwarding skipped: unable to detect WAN interface."
+    return
+  fi
+  if [[ "${EUID}" -eq 0 ]]; then
+    "${DIST_DIR}/provider_enable_forwarding.sh" "${iface}" || true
+    return
+  fi
+  if have_cmd sudo; then
+    sudo -n "${DIST_DIR}/provider_enable_forwarding.sh" "${iface}" || \
+      echo "Provider forwarding not enabled automatically (sudo prompt required). Run: sudo ${DIST_DIR}/provider_enable_forwarding.sh ${iface}"
+  else
+    echo "Provider forwarding not enabled automatically (sudo unavailable). Run as root: ${DIST_DIR}/provider_enable_forwarding.sh ${iface}"
+  fi
+}
+
+maybe_enable_strict_firewall() {
+  if [[ "${STRICT_FIREWALL:-true}" != "true" ]]; then
+    return
+  fi
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    return
+  fi
+  local iface
+  iface="$(detect_wan_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    echo "Strict firewall skipped: unable to detect WAN interface."
+    return
+  fi
+  if [[ "${EUID}" -eq 0 ]]; then
+    "${DIST_DIR}/strict_firewall_enable.sh" "${iface}" || true
+    return
+  fi
+  if have_cmd sudo; then
+    sudo -n "${DIST_DIR}/strict_firewall_enable.sh" "${iface}" || \
+      echo "Strict firewall not enabled automatically (sudo prompt required). Run: sudo ${DIST_DIR}/strict_firewall_enable.sh ${iface}"
+  else
+    echo "Strict firewall not enabled automatically (sudo unavailable). Run as root: ${DIST_DIR}/strict_firewall_enable.sh ${iface}"
+  fi
+}
+
 if ! have_cmd docker; then
   case "$(uname -s)" in
     Linux*) install_docker_linux ;;
@@ -72,9 +126,9 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   RAND() { tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32; }
   WG_KEY="$(docker run --rm --entrypoint sh "${IMAGE}" -lc 'wg genkey')"
   cat > "${ENV_FILE}" <<ENV
-POOL_URL=https://dvpn-worker.i7zm1n3.workers.dev/providers
-PAYMENT_API_URL=https://dvpn-worker.i7zm1n3.workers.dev/verify
-PAYMENT_PORTAL_URL=https://dvpn-worker.i7zm1n3.workers.dev/portal
+POOL_URL=https://api.dvpn.lol/providers
+PAYMENT_API_URL=https://api.dvpn.lol/verify
+PAYMENT_PORTAL_URL=https://api.dvpn.lol/portal
 PAYMENT_TOKEN=$(RAND)
 USER_ID=user-$(RAND | head -c 12)
 WG_PRIVATE_KEY=${WG_KEY}
@@ -96,7 +150,7 @@ LOG_STDOUT=false
 AUDIT_ENABLED=false
 FALLBACK_ENABLED=true
 FALLBACK_SCRIPT_PATH=/app/scripts/setup_fallback_node.sh
-FALLBACK_ORCHESTRATOR_URL=https://dvpn-worker.i7zm1n3.workers.dev
+FALLBACK_ORCHESTRATOR_URL=https://api.dvpn.lol
 FALLBACK_TIMEOUT_SECONDS=30
 AUTO_NETWORK_CONFIG=true
 UPNP_ENABLED=true
@@ -130,6 +184,9 @@ docker run -d \
   -p 51820:51820/udp \
   -v "${DATA_DIR}:/var/lib/dvpn" \
   "${IMAGE}" >/dev/null
+
+maybe_enable_provider_forwarding
+maybe_enable_strict_firewall
 
 echo "DVPN started in container '${CONTAINER}'."
 echo "Status: docker logs --tail 60 ${CONTAINER}"

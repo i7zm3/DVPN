@@ -42,9 +42,9 @@ if (-not (Test-Path $EnvFile)) {
   }
   $WGKey = docker run --rm --entrypoint sh $Image -lc "wg genkey"
   @"
-POOL_URL=https://dvpn-worker.i7zm1n3.workers.dev/providers
-PAYMENT_API_URL=https://dvpn-worker.i7zm1n3.workers.dev/verify
-PAYMENT_PORTAL_URL=https://dvpn-worker.i7zm1n3.workers.dev/portal
+POOL_URL=https://api.dvpn.lol/providers
+PAYMENT_API_URL=https://api.dvpn.lol/verify
+PAYMENT_PORTAL_URL=https://api.dvpn.lol/portal
 PAYMENT_TOKEN=$(Rand 32)
 USER_ID=user-$(Rand 12)
 WG_PRIVATE_KEY=$WGKey
@@ -66,7 +66,7 @@ LOG_STDOUT=false
 AUDIT_ENABLED=false
 FALLBACK_ENABLED=true
 FALLBACK_SCRIPT_PATH=/app/scripts/setup_fallback_node.sh
-FALLBACK_ORCHESTRATOR_URL=https://dvpn-worker.i7zm1n3.workers.dev
+FALLBACK_ORCHESTRATOR_URL=https://api.dvpn.lol
 FALLBACK_TIMEOUT_SECONDS=30
 AUTO_NETWORK_CONFIG=true
 UPNP_ENABLED=true
@@ -91,6 +91,8 @@ DANTED_CONFIG_PATH=/tmp/dvpn/danted.conf
 docker rm -f $Container 2>$null | Out-Null
 docker run -d --name $Container --restart unless-stopped --privileged --log-driver none --device /dev/net/tun:/dev/net/tun --env-file $EnvFile -p 8765:8765 -p 51820:51820/udp -v "${DataDir}:/var/lib/dvpn" $Image | Out-Null
 
+Write-Host "Provider forwarding/NAT auto-setup is Linux-host only."
+Write-Host "If running on Linux, use: sudo ./provider_enable_forwarding.sh <wan_iface>"
 Write-Host "DVPN started in container '$Container'."
 Write-Host "Logs: docker logs --tail 60 $Container"
 Write-Host "Health: curl http://127.0.0.1:8765/health"

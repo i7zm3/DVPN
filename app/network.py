@@ -5,6 +5,7 @@ import ssl
 import subprocess
 import urllib.request
 from dataclasses import dataclass
+from ipaddress import ip_address, ip_network
 
 
 @dataclass
@@ -12,6 +13,7 @@ class NetworkInfo:
     local_ip: str | None
     public_ip: str | None
     upnp_mapped: bool
+    cgnat_suspected: bool
 
 
 def detect_local_ip() -> str | None:
@@ -61,6 +63,25 @@ def map_upnp(port: int, protocol: str = "UDP") -> bool:
         return False
 
 
+def map_upnp_retry(port: int, protocol: str = "UDP", attempts: int = 3) -> bool:
+    attempts = max(1, attempts)
+    for _ in range(attempts):
+        if map_upnp(port, protocol):
+            return True
+    return False
+
+
+def is_cgnat_suspected(public_ip: str | None) -> bool:
+    if not public_ip:
+        return True
+    try:
+        ip = ip_address(public_ip)
+    except ValueError:
+        return True
+    cgnat = ip_network("100.64.0.0/10")
+    return ip in cgnat or ip.is_private
+
+
 def derive_wg_public_key(private_key: str) -> str | None:
     try:
         proc = subprocess.run(
@@ -80,5 +101,10 @@ def derive_wg_public_key(private_key: str) -> str | None:
 def auto_network_config(enable_upnp: bool, upnp_port: int) -> NetworkInfo:
     local_ip = detect_local_ip()
     public_ip = detect_public_ip()
-    upnp_mapped = map_upnp(upnp_port) if enable_upnp else False
-    return NetworkInfo(local_ip=local_ip, public_ip=public_ip, upnp_mapped=upnp_mapped)
+    upnp_mapped = map_upnp_retry(upnp_port) if enable_upnp else False
+    return NetworkInfo(
+        local_ip=local_ip,
+        public_ip=public_ip,
+        upnp_mapped=upnp_mapped,
+        cgnat_suspected=is_cgnat_suspected(public_ip),
+    )

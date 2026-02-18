@@ -17,6 +17,10 @@ class Provider:
     endpoint: str
     public_key: str
     allowed_ips: str
+    client_ip: str | None = None
+    lease_nonce: str | None = None
+    lease_exp: int | None = None
+    lease_sig: str | None = None
 
 
 class PoolClient:
@@ -53,12 +57,26 @@ class PoolClient:
                     endpoint=item["endpoint"],
                     public_key=item["public_key"],
                     allowed_ips=item.get("allowed_ips", "0.0.0.0/0,::/0"),
+                    client_ip=item.get("client_ip"),
+                    lease_nonce=item.get("lease_nonce"),
+                    lease_exp=item.get("lease_exp"),
+                    lease_sig=item.get("lease_sig"),
                 )
             )
         return providers
 
-    def mark_approved(self, provider_id: str, token: str) -> None:
-        payload = json.dumps({"provider_id": provider_id, "token": token, "approved": True}).encode("utf-8")
+    def mark_approved(self, provider: Provider, token: str) -> None:
+        payload = json.dumps(
+            {
+                "provider_id": provider.id,
+                "token": token,
+                "approved": True,
+                "client_ip": provider.client_ip,
+                "lease_nonce": provider.lease_nonce,
+                "lease_exp": provider.lease_exp,
+                "lease_sig": provider.lease_sig,
+            }
+        ).encode("utf-8")
         req = urllib.request.Request(
             self.pool_url.rstrip("/") + "/approve",
             data=payload,
@@ -91,6 +109,31 @@ class PoolClient:
         )
         with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context):
             return
+
+    def prune_dead_endpoints(self) -> dict:
+        req = urllib.request.Request(
+            self.pool_url.rstrip("/") + "/prune",
+            data=b"{}",
+            headers=self._headers({"Content-Type": "application/json"}),
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def fetch_next_claim(self, provider_id: str) -> dict | None:
+        payload = json.dumps({"provider_id": provider_id}).encode("utf-8")
+        req = urllib.request.Request(
+            self.pool_url.rstrip("/") + "/claim/next",
+            data=payload,
+            headers=self._headers({"Content-Type": "application/json"}),
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        if not body.get("ok"):
+            return None
+        claim = body.get("claim")
+        return claim if isinstance(claim, dict) else None
 
 
 def _allow_private_endpoints() -> bool:

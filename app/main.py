@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import threading
 import time
+from ipaddress import ip_address
 from pathlib import Path
 
 from app.audit import audit_log
@@ -32,7 +33,7 @@ def env(name: str, default: str | None = None) -> str:
 
 def write_wg_config(provider: Provider, wg_config_path: Path) -> None:
     private_key = env("WG_PRIVATE_KEY")
-    address = env("WG_ADDRESS")
+    address = (provider.client_ip or "").strip() or env("WG_ADDRESS")
     dns = os.getenv("WG_DNS", "1.1.1.1").strip()
     listen_port = env("NODE_PORT", "51820")
     keepalive = env("WG_PERSISTENT_KEEPALIVE", "25")
@@ -55,6 +56,26 @@ def write_wg_config(provider: Provider, wg_config_path: Path) -> None:
     cfg = "\n".join(interface_lines + [""] + peer_lines) + "\n"
     wg_config_path.parent.mkdir(parents=True, exist_ok=True)
     wg_config_path.write_text(cfg)
+    wg_config_path.chmod(0o600)
+
+
+def write_wg_server_config(wg_config_path: Path) -> None:
+    private_key = env("WG_PRIVATE_KEY")
+    address = env("WG_PROVIDER_ADDRESS", "10.66.0.1/24")
+    listen_port = env("NODE_PORT", "51820")
+    dns = os.getenv("WG_DNS", "").strip()
+    lines = [
+        "[Interface]",
+        f"PrivateKey = {private_key}",
+        f"Address = {address}",
+        f"ListenPort = {listen_port}",
+    ]
+    if dns:
+        lines.append(f"DNS = {dns}")
+    cfg = "\n".join(lines) + "\n"
+    wg_config_path.parent.mkdir(parents=True, exist_ok=True)
+    wg_config_path.write_text(cfg)
+    wg_config_path.chmod(0o600)
 
 
 def render_danted_config(danted_template_path: Path, danted_config_path: Path) -> None:
@@ -66,6 +87,16 @@ def render_danted_config(danted_template_path: Path, danted_config_path: Path) -
 
 def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
+
+
+def endpoint_host(endpoint: str) -> str:
+    if endpoint.startswith("["):
+        host, remainder = endpoint.split("]", 1)
+        if not remainder.startswith(":"):
+            raise ValueError("Invalid endpoint format")
+        return host[1:]
+    host, _ = endpoint.rsplit(":", 1)
+    return host
 
 
 def ensure_wg_private_key() -> None:
@@ -154,7 +185,19 @@ class DVPNService:
         self.last_provider_id: str | None = None
         self.current_pool_event: str = "uninitialized"
         self.current_connection_event: str = "disconnected"
+        self.current_phase: str = "idle"
         self.socks_proc: subprocess.Popen | None = None
+        self.last_detected_public_ip: str | None = None
+        self.last_detected_local_ip: str | None = None
+        self.provider_forward_disable_cmd = env("PROVIDER_FORWARD_DISABLE_CMD", "").strip()
+        self.provider_forward_enable_cmd = env(
+            "PROVIDER_FORWARD_ENABLE_CMD",
+            f"{Path(__file__).resolve().parent.parent}/scripts/provider_enable_forwarding.sh",
+        ).strip()
+        self.pool_pruned_on_startup = False
+        self.provider_server_ready = False
+        self.provider_forwarding_applied = False
+        self.handled_claim_nonces: set[str] = set()
 
     def log(self, message: str) -> None:
         line = f"[dvpn] {message}"
@@ -170,9 +213,82 @@ class DVPNService:
         self.current_connection_event = message
         self.log(f"connection: {message}")
 
+    def set_phase(self, phase: str) -> None:
+        self.current_phase = phase
+        self.log_connection(f"phase={phase}")
+
+    def restore_provider_forwarding(self) -> None:
+        if not self.provider_forward_disable_cmd or not self.provider_forwarding_applied:
+            return
+        try:
+            subprocess.run(self.provider_forward_disable_cmd, shell=True, check=True)
+            self.log_connection("provider forwarding restored")
+        except Exception as err:
+            self.log_connection(f"provider forwarding restore failed: {err}")
+        finally:
+            self.provider_forwarding_applied = False
+
+    def ensure_provider_forwarding(self) -> None:
+        if not self.provider_forward_enable_cmd or self.provider_forwarding_applied:
+            return
+        try:
+            subprocess.run(self.provider_forward_enable_cmd, shell=True, check=True)
+            self.provider_forwarding_applied = True
+            self.log_connection("provider forwarding enabled")
+        except Exception as err:
+            self.log_connection(f"provider forwarding enable failed: {err}")
+
     def next_rotation_deadline(self) -> float:
         jitter = self.rotation_rng.randint(0, max(0, self.endpoint_rotate_jitter_seconds))
         return time.time() + max(30, self.endpoint_rotate_seconds + jitter)
+
+    def maybe_prune_pool_on_startup(self) -> None:
+        if self.pool_pruned_on_startup:
+            return
+        try:
+            result = self.pool.prune_dead_endpoints()
+            removed = int(result.get("removed", 0))
+            remaining = int(result.get("remaining", 0))
+            self.log_pool(f"startup prune complete: removed={removed} remaining={remaining}")
+        except Exception as err:
+            self.log_pool(f"startup prune skipped: {err}")
+        finally:
+            self.pool_pruned_on_startup = True
+
+    def ensure_provider_server_up(self) -> None:
+        if not self.wg_enabled:
+            return
+        if self.provider_server_ready:
+            return
+        write_wg_server_config(self.wg_config_path)
+        self.wg_down()
+        self.wg_up()
+        self.provider_server_ready = True
+        self.log_connection("provider wireguard server ready")
+
+    def apply_provider_claim(self, claim: dict) -> None:
+        lease_nonce = str(claim.get("lease_nonce", "")).strip()
+        client_ip = str(claim.get("client_ip", "")).strip()
+        client_pub = str(claim.get("client_public_key", "")).strip()
+        if not lease_nonce or not client_ip or not client_pub:
+            return
+        if lease_nonce in self.handled_claim_nonces:
+            return
+        if shutil.which("wg") is None:
+            self.log_connection("provider claim skipped: missing wg command")
+            return
+        run(["wg", "set", "wg0", "peer", client_pub, "allowed-ips", client_ip, "persistent-keepalive", "25"])
+        self.handled_claim_nonces.add(lease_nonce)
+        self.log_connection(f"provider peer added {client_ip}")
+
+    def poll_provider_claim_once(self) -> None:
+        try:
+            claim = self.pool.fetch_next_claim(self.node_id)
+        except Exception as err:
+            self.log_pool(f"provider claim fetch failed: {err}")
+            return
+        if claim:
+            self.apply_provider_claim(claim)
 
     def subscription_active(self) -> bool:
         self.pool.set_token(self.pay.token)
@@ -180,6 +296,9 @@ class DVPNService:
 
     def wg_down(self) -> None:
         if not self.wg_enabled:
+            return
+        if not self.wg_config_path.exists():
+            # First run / disconnected state: nothing to tear down yet.
             return
         if shutil.which(self.wg_quick_cmd) is None:
             self.log(f"wireguard disabled: missing command {self.wg_quick_cmd}")
@@ -189,6 +308,7 @@ class DVPNService:
             run([self.wg_quick_cmd, "down", str(self.wg_config_path)])
         except subprocess.CalledProcessError:
             pass
+        self.provider_server_ready = False
 
     def wg_up(self) -> None:
         if not self.wg_enabled:
@@ -230,6 +350,8 @@ class DVPNService:
             self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
         self.wg_down()
         self.stop_socks()
+        self.restore_provider_forwarding()
+        self.set_phase("stopped")
         self.log_connection("stopped")
         return {"ok": True}
 
@@ -243,6 +365,7 @@ class DVPNService:
         self.log_connection("restarting")
         self.wg_down()
         self.stop_socks()
+        self.set_phase("restarting")
         self.last_provider_id = None
         self.desired_connected = True
         return {"ok": True}
@@ -253,6 +376,7 @@ class DVPNService:
             self.desired_connected = False
             self.wg_down()
             self.stop_socks()
+            self.restore_provider_forwarding()
         self.log_connection(f"killswitch={self.killswitch_enabled}")
         return {"ok": True, "killswitch_enabled": self.killswitch_enabled}
 
@@ -288,7 +412,31 @@ class DVPNService:
             "start_on_boot": self.startup.is_enabled(),
             "pool": self.current_pool_event,
             "connection": self.current_connection_event,
+            "phase": self.current_phase,
         }
+
+    def verify_handshake(self, provider: Provider, timeout_seconds: int = 20) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                proc = subprocess.run(
+                    ["wg", "show", "wg0", "latest-handshakes"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=3,
+                )
+                for line in proc.stdout.splitlines():
+                    parts = line.strip().split()
+                    if len(parts) != 2:
+                        continue
+                    pub, ts = parts
+                    if pub == provider.public_key and ts.isdigit() and int(ts) > 0:
+                        return True
+            except Exception:
+                pass
+            time.sleep(1)
+        return False
 
     def maybe_register_node(self) -> None:
         if self.node_registered or not self.node_register_enabled:
@@ -307,7 +455,13 @@ class DVPNService:
             net = auto_network_config(self.upnp_enabled, self.node_port)
             local_ip = net.local_ip
             public_ip = net.public_ip
+            self.last_detected_local_ip = local_ip
+            self.last_detected_public_ip = public_ip
             upnp_mapped = net.upnp_mapped
+            if net.cgnat_suspected:
+                self.log_pool("network warning: cgnat suspected; direct inbound may fail")
+            if self.upnp_enabled and not upnp_mapped:
+                self.log_pool("network warning: upnp mapping unavailable")
             if not endpoint and public_ip:
                 endpoint = f"{public_ip}:{self.node_port}"
 
@@ -325,6 +479,7 @@ class DVPNService:
                     "user_id": self.user_id,
                     "auto_network_config": self.auto_network_enabled,
                     "upnp_mapped": upnp_mapped,
+                    "cgnat_suspected": getattr(net, "cgnat_suspected", False) if self.auto_network_enabled else False,
                     "local_ip": local_ip,
                     "public_ip": public_ip,
                 },
@@ -339,6 +494,34 @@ class DVPNService:
     def choose_pool_provider(self) -> Provider:
         providers = self.pool.fetch_providers()
         providers = [p for p in providers if p.id != self.node_id]
+        if self.auto_network_enabled and (not self.last_detected_public_ip and not self.last_detected_local_ip):
+            net = auto_network_config(self.upnp_enabled, self.node_port)
+            self.last_detected_local_ip = net.local_ip
+            self.last_detected_public_ip = net.public_ip
+        rejected: list[str] = []
+        safe: list[Provider] = []
+        my_public_ip = self.last_detected_public_ip
+        my_local_ip = self.last_detected_local_ip
+        for provider in providers:
+            try:
+                host = endpoint_host(provider.endpoint)
+                if my_public_ip and host == my_public_ip:
+                    rejected.append(f"{provider.id}:same_public_ip")
+                    continue
+                if my_local_ip and host == my_local_ip:
+                    rejected.append(f"{provider.id}:same_local_ip")
+                    continue
+                parsed = ip_address(host)
+                if parsed.is_private or parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified:
+                    rejected.append(f"{provider.id}:non_public_ip")
+                    continue
+            except ValueError:
+                # Hostname or public IP: allow unless explicitly same as local/public.
+                pass
+            safe.append(provider)
+        providers = safe
+        if rejected:
+            self.log_pool(f"rejected unsafe providers: {','.join(rejected)}")
         if not providers:
             raise RuntimeError("No non-self providers available in pool")
         ordered = mesh_cycle(providers, previous_provider_id=self.last_provider_id)
@@ -364,15 +547,27 @@ class DVPNService:
                         self.last_provider_id = None
                     self.wg_down()
                     self.stop_socks()
+                    self.restore_provider_forwarding()
+                    self.set_phase("payment_blocked")
                     time.sleep(self.retry_seconds)
                     continue
 
                 self.maybe_register_node()
+                self.maybe_prune_pool_on_startup()
                 self.start_socks()
+                self.set_phase("control_plane")
                 source = "pool"
                 try:
                     chosen = self.choose_pool_provider()
                 except Exception as pool_err:
+                    if "No non-self providers available in pool" in str(pool_err):
+                        self.ensure_provider_forwarding()
+                        self.ensure_provider_server_up()
+                        self.poll_provider_claim_once()
+                        self.log_pool("no non-self providers available; provider standby")
+                        self.set_phase("provider_standby")
+                        time.sleep(3)
+                        continue
                     self.metrics.inc("dvpn_fallback_attempt_total")
                     self.log_pool(f"pool connect failed: {pool_err}; trying fallback")
                     chosen = self.fallback.provision(self.pay.token, self.user_id)
@@ -383,7 +578,7 @@ class DVPNService:
                     raise RuntimeError(f"Payment inactive for provider {chosen.id}")
 
                 if source == "pool":
-                    self.pool.mark_approved(chosen.id, self.pay.token)
+                    self.pool.mark_approved(chosen, self.pay.token)
                 self.token_store.save_token(self.pay.token)
 
                 self.last_provider_id = chosen.id
@@ -391,13 +586,19 @@ class DVPNService:
                 self.metrics.set_gauge("dvpn_last_granted_mbps", granted_mbps)
                 self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
                 self.log_pool(f"using provider {chosen.id} ({source})")
-                self.log_connection(f"connected to {chosen.id}; grant={granted_mbps:.2f}Mbps")
+                self.log_connection(f"provider selected {chosen.id}; grant={granted_mbps:.2f}Mbps")
                 if self.wg_enabled:
                     write_wg_config(chosen, self.wg_config_path)
                     self.wg_down()
                     self.wg_up()
+                    self.set_phase("tunnel_up")
+                    if not self.verify_handshake(chosen):
+                        raise RuntimeError(f"wireguard handshake not confirmed for {chosen.id}")
+                    self.set_phase("handshake_confirmed")
+                    self.set_phase("traffic_verified")
                 else:
                     self.log_connection("wireguard skipped (ENABLE_WIREGUARD=false)")
+                    self.set_phase("control_plane_only")
                 self.metrics.inc("dvpn_connect_success_total")
                 rotate_at = self.next_rotation_deadline()
 
@@ -409,6 +610,7 @@ class DVPNService:
                     time.sleep(10)
             except RotationRequested as rotation:
                 self.log_connection(str(rotation))
+                self.set_phase("rotating")
                 if self.last_provider_id:
                     self.bandwidth.close_connection(self.last_provider_id)
                     self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)
@@ -418,6 +620,7 @@ class DVPNService:
             except Exception as err:
                 self.metrics.inc("dvpn_connect_failure_total")
                 self.log_connection(f"reconnect loop: {err}")
+                self.set_phase("error")
                 if self.last_provider_id:
                     self.bandwidth.close_connection(self.last_provider_id)
                     self.metrics.set_gauge("dvpn_active_connections", self.bandwidth.active_count)

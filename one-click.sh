@@ -44,6 +44,60 @@ wait_for_docker() {
   exit 1
 }
 
+detect_wan_iface() {
+  ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
+}
+
+maybe_enable_provider_forwarding() {
+  if [[ "${ENABLE_PROVIDER_FORWARDING:-true}" != "true" ]]; then
+    return
+  fi
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    return
+  fi
+  local iface
+  iface="$(detect_wan_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    echo "Provider forwarding skipped: unable to detect WAN interface."
+    return
+  fi
+  if [[ "${EUID}" -eq 0 ]]; then
+    ./scripts/provider_enable_forwarding.sh "${iface}" || true
+    return
+  fi
+  if have_cmd sudo; then
+    sudo -n ./scripts/provider_enable_forwarding.sh "${iface}" || \
+      echo "Provider forwarding not enabled automatically (sudo prompt required). Run: sudo ./scripts/provider_enable_forwarding.sh ${iface}"
+  else
+    echo "Provider forwarding not enabled automatically (sudo unavailable). Run as root: ./scripts/provider_enable_forwarding.sh ${iface}"
+  fi
+}
+
+maybe_enable_strict_firewall() {
+  if [[ "${STRICT_FIREWALL:-true}" != "true" ]]; then
+    return
+  fi
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    return
+  fi
+  local iface
+  iface="$(detect_wan_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    echo "Strict firewall skipped: unable to detect WAN interface."
+    return
+  fi
+  if [[ "${EUID}" -eq 0 ]]; then
+    ./scripts/strict_firewall_enable.sh "${iface}" || true
+    return
+  fi
+  if have_cmd sudo; then
+    sudo -n ./scripts/strict_firewall_enable.sh "${iface}" || \
+      echo "Strict firewall not enabled automatically (sudo prompt required). Run: sudo ./scripts/strict_firewall_enable.sh ${iface}"
+  else
+    echo "Strict firewall not enabled automatically (sudo unavailable). Run as root: ./scripts/strict_firewall_enable.sh ${iface}"
+  fi
+}
+
 case "$(uname -s)" in
   Linux*) install_docker_linux ;;
   Darwin*) install_docker_macos ;;
@@ -59,4 +113,6 @@ python3 scripts/prepare_env.py
 ./scripts/gen_dev_certs.sh
 
 docker compose up -d --build
+maybe_enable_provider_forwarding
+maybe_enable_strict_firewall
 echo "DVPN started. Check status: docker compose ps"

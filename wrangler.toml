@@ -3,6 +3,10 @@ main = "src/index.js"
 compatibility_date = "2026-02-17"
 workers_dev = true
 
+[[kv_namespaces]]
+binding = "NODE_POOL_KV"
+id = "b7810ad51f3e48479001a87b7dd25fc7"
+
 [vars]
 PUBLIC_BASE_URL = "https://dvpn-worker.<your-account>.workers.dev"
 REQUIRED_WALLET = "1MUss4jmaRJ2sMtS9gyZqeRw8WrhWTsrxn"

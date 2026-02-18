@@ -17,12 +17,14 @@ This repository provides a containerized **distributed VPN client** with secure 
 
 - TLS handshake enforced for pool/payment transport (`TLSv1.2+` minimum).
 - Pool handshake sequence verifies payment token, marks provider approval, and only then activates tunnel routing.
+- Pool approval requires a short-lived HMAC-signed lease (`client_ip`, nonce, expiry, signature) bound to token+provider.
 - Fallback orchestration calls require HTTPS (`TLSv1.2+`) and can pin a custom CA cert.
 - Local token storage uses PBKDF2 (salted key derivation) + integrity MAC.
 - WireGuard private key remains environment-provided and is only written into runtime config in-container.
 - Startup auto-configuration can detect local/public IPs and attempt UPnP UDP mapping for node publishing.
 - Runtime defaults to non-persistent logs (`LOG_STDOUT=false`, `AUDIT_ENABLED=false`).
 - Runtime metrics are exposed on control endpoint `/metrics` (Prometheus format).
+- Runtime status exposes explicit phase transitions (`control_plane`, `control_plane_verified`, `tunnel_up`, `handshake_confirmed`, `traffic_verified`, `error`).
 
 ## Mesh Routing
 
@@ -86,6 +88,63 @@ Each install can auto-register itself as a pool node at startup:
 
 Registration is best-effort and does not block normal client connectivity.
 
+## Provider Internet Sharing (Secure Tunnel Egress)
+
+To provide internet to another user securely through your tunnel:
+
+1. Your node must be selected as a pool provider (public endpoint + valid WireGuard key).
+2. Client connects to your node via WireGuard peer config (pool/worker controlled).
+3. On the provider host, enable forwarding/NAT so peer traffic exits through WAN only.
+
+Server-side commands (provider machine):
+
+```bash
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -A POSTROUTING -o <wan_iface> -j MASQUERADE
+iptables -A FORWARD -i wg0 -o <wan_iface> -j ACCEPT
+iptables -A FORWARD -i <wan_iface> -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+```
+
+Replace `<wan_iface>` with your actual uplink interface (for example `wlp2s0` or `eth0`).
+
+One-command helper:
+
+```bash
+sudo ./scripts/provider_enable_forwarding.sh <wan_iface>
+```
+
+Rollback helper (restores previous `ip_forward` and removes only rules added by DVPN):
+
+```bash
+sudo ./scripts/provider_disable_forwarding.sh
+```
+
+Native mode auto-restore:
+
+- `scripts/native_run.sh` sets `PROVIDER_FORWARD_DISABLE_CMD` by default.
+- On disconnect/stop/killswitch/payment-inactive teardown, runtime calls the restore script automatically.
+
+Strict firewall mode (Linux):
+
+- Blocks all inbound except WireGuard UDP port.
+- Forces outbound through `wg0` only, with WireGuard/control-plane exceptions.
+- Auto-enabled by default in `scripts/native_run.sh`, `one-click.sh`, and portable run scripts.
+
+Manual commands:
+
+```bash
+sudo ./scripts/strict_firewall_enable.sh <wan_iface>
+sudo ./scripts/strict_firewall_disable.sh
+```
+
+Security hardening for provider hosts:
+
+- Keep WireGuard private keys secret.
+- Only expose expected WireGuard UDP port(s).
+- Restrict SSH/control/management ports by source IP allowlist.
+- Rotate WireGuard keys and payment tokens periodically.
+- Keep `PAID_TOKENS_SECRET` enforced in Worker so unpaid tokens cannot access pool.
+
 ## Payment Verification Rules
 
 The client will only connect if verify response includes all:
@@ -141,6 +200,12 @@ Linux/macOS:
 ./one-click.sh
 ```
 
+Stop + rollback host forwarding changes:
+
+```bash
+./one-click-stop.sh
+```
+
 Windows (PowerShell):
 
 ```powershell
@@ -169,6 +234,14 @@ This script:
 - starts two nodes with private endpoints enabled
 - verifies bidirectional WireGuard handshake
 
+## Integration Matrix
+
+Run an end-to-end matrix (unit tests + token gates + tunnel checks):
+
+```bash
+./scripts/integration_matrix.sh
+```
+
 ## Portable Docker Bundle (Transfer To Others)
 
 Build a portable image bundle:
@@ -182,6 +255,8 @@ Bundle output is created in `dist/`:
 - `dist/dvpn-node-image.tar.gz`
 - `dist/one-click-run.sh`
 - `dist/one-click-run.ps1`
+- `dist/one-click-stop.sh`
+- `dist/one-click-stop.ps1`
 - `dist/README.md`
 - `dist/INSTALL.md`
 - `dist/docs/info.html`
@@ -192,6 +267,12 @@ Linux/macOS:
 
 ```bash
 ./one-click-run.sh
+```
+
+Stop + rollback host forwarding changes:
+
+```bash
+./one-click-stop.sh
 ```
 
 Windows PowerShell:

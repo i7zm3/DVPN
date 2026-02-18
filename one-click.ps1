@@ -83,4 +83,6 @@ rm -f /tmp/dev-server.csr /tmp/dev-openssl.cnf /w/certs/dev-ca.srl
 docker run --rm -v "${Root}:${UnixRoot}" alpine:3.20 sh -lc "apk add --no-cache openssl >/dev/null && $CertScript"
 
 docker compose up -d --build
+Write-Host "Provider forwarding/NAT auto-setup is Linux-host only."
+Write-Host "If running on Linux, use: sudo ./scripts/provider_enable_forwarding.sh <wan_iface>"
 Write-Host "DVPN started. Check status: docker compose ps"
