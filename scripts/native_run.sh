@@ -19,8 +19,13 @@ fi
 set +a
 
 # Prepare runtime paths used by WireGuard/token store so first run is clean.
-WG_CONFIG_PATH="${WG_CONFIG_PATH:-/tmp/dvpn/wg0.conf}"
-TOKEN_STORE_PATH="${TOKEN_STORE_PATH:-/tmp/dvpn/token.store}"
+# Use a per-user runtime dir so root/non-root runs don't fight over /tmp ownership/permissions.
+RUNTIME_UID="${SUDO_UID:-${UID}}"
+RUNTIME_DIR="${DVPN_RUNTIME_DIR:-/tmp/dvpn-${RUNTIME_UID}}"
+
+WG_CONFIG_PATH="${WG_CONFIG_PATH:-${RUNTIME_DIR}/wg0.conf}"
+TOKEN_STORE_PATH="${TOKEN_STORE_PATH:-${RUNTIME_DIR}/token.store}"
+
 mkdir -p "$(dirname "${WG_CONFIG_PATH}")" "$(dirname "${TOKEN_STORE_PATH}")"
 chmod 700 "$(dirname "${WG_CONFIG_PATH}")" "$(dirname "${TOKEN_STORE_PATH}")" 2>/dev/null || true
 

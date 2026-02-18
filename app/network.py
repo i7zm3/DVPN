@@ -44,15 +44,19 @@ def detect_public_ip(timeout: int = 5) -> str | None:
     return None
 
 
-def map_upnp(port: int, protocol: str = "UDP") -> bool:
+def map_upnp(port: int, protocol: str = "UDP", local_ip: str | None = None) -> bool:
     if port < 1 or port > 65535:
         return False
     upnpc = shutil.which("upnpc")
     if not upnpc:
         return False
+    if not local_ip:
+        local_ip = detect_local_ip()
+    if not local_ip:
+        return False
     try:
         subprocess.run(
-            [upnpc, "-e", "DVPN", "-a", "127.0.0.1", str(port), str(port), protocol.upper()],
+            [upnpc, "-e", "DVPN", "-a", local_ip, str(port), str(port), protocol.upper()],
             check=True,
             capture_output=True,
             text=True,
@@ -63,10 +67,10 @@ def map_upnp(port: int, protocol: str = "UDP") -> bool:
         return False
 
 
-def map_upnp_retry(port: int, protocol: str = "UDP", attempts: int = 3) -> bool:
+def map_upnp_retry(port: int, protocol: str = "UDP", attempts: int = 3, local_ip: str | None = None) -> bool:
     attempts = max(1, attempts)
     for _ in range(attempts):
-        if map_upnp(port, protocol):
+        if map_upnp(port, protocol, local_ip=local_ip):
             return True
     return False
 
@@ -101,7 +105,7 @@ def derive_wg_public_key(private_key: str) -> str | None:
 def auto_network_config(enable_upnp: bool, upnp_port: int) -> NetworkInfo:
     local_ip = detect_local_ip()
     public_ip = detect_public_ip()
-    upnp_mapped = map_upnp_retry(upnp_port) if enable_upnp else False
+    upnp_mapped = map_upnp_retry(upnp_port, local_ip=local_ip) if enable_upnp else False
     return NetworkInfo(
         local_ip=local_ip,
         public_ip=public_ip,

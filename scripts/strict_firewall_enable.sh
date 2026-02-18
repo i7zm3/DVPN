@@ -12,6 +12,7 @@ WG_PORT="${NODE_PORT:-51820}"
 WG_FWMARK="${WG_FWMARK:-}"
 STATE_FILE="${DVPN_STRICT_FW_STATE_FILE:-/tmp/dvpn-strict-firewall.state}"
 ALLOW_CONTROL_PLANE="${STRICT_FW_ALLOW_CONTROL_PLANE:-true}"
+ALLOW_DNS="${STRICT_FW_ALLOW_DNS:-true}"
 
 if [[ -z "${WAN_IFACE}" ]]; then
   WAN_IFACE="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')"
@@ -79,6 +80,16 @@ iptables -A DVPN_STRICT_OUTPUT -o lo -j ACCEPT
 iptables -A DVPN_STRICT_OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 iptables -A DVPN_STRICT_OUTPUT -o "${WG_IFACE}" -j ACCEPT
 iptables -A DVPN_STRICT_OUTPUT -m mark --mark "${WG_FWMARK}" -j ACCEPT
+
+if [[ "${ALLOW_DNS,,}" == "true" ]]; then
+  # Allow DNS to configured resolvers so control-plane host resolution works before tunnel is up.
+  mapfile -t RESOLVERS < <(awk '/^nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf 2>/dev/null | sort -u)
+  for ns in "${RESOLVERS[@]}"; do
+    [[ -z "${ns}" ]] && continue
+    iptables -A DVPN_STRICT_OUTPUT -o "${WAN_IFACE}" -p udp -d "${ns}" --dport 53 -j ACCEPT
+    iptables -A DVPN_STRICT_OUTPUT -o "${WAN_IFACE}" -p tcp -d "${ns}" --dport 53 -j ACCEPT
+  done
+fi
 
 if [[ "${ALLOW_CONTROL_PLANE,,}" == "true" ]]; then
   for host in "${CONTROL_HOSTS[@]}"; do
