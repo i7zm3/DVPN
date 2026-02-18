@@ -48,21 +48,18 @@ if [[ ${#TOKENS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-python3 - <<PY > /tmp/dvpn_paid_tokens_json
+TOKENS_JSON="$(python3 - <<'PY' "${TOKENS[@]}"
 import json,sys
-arr = ${TOKENS@Q}
-# Bash renders as a single string; parse ourselves.
-# Expect tokens are already space-separated and safe.
-# We'll just rebuild from argv by splitting.
-toks = " ".join(arr).strip().split()
-print(json.dumps(toks))
+print(json.dumps(sys.argv[1:]))
 PY
+)"
 
-PAYLOAD="$(python3 - <<'PY'
-import json
-val=open('/tmp/dvpn_paid_tokens_json','r',encoding='utf-8').read().strip()
-print(json.dumps({"name":"PAID_TOKENS_JSON","text":val,"type":"secret_text"}))
-PY)"
+PAYLOAD="$(python3 - <<'PY' "${TOKENS_JSON}"
+import json,sys
+tokens_json = sys.argv[1]
+print(json.dumps({"name":"PAID_TOKENS_JSON","text":tokens_json,"type":"secret_text"}))
+PY
+)"
 
 # Cloudflare API: bulk update secrets expects an array.
 BODY="[${PAYLOAD}]"
@@ -73,11 +70,12 @@ resp="$(curl -sS -X PUT \
   -H "Content-Type: application/json" \
   --data "${BODY}")"
 
-ok="$(python3 - <<PY
-import json
-r=json.loads('''${resp}''')
+ok="$(python3 - <<'PY' "${resp}"
+import json,sys
+r=json.loads(sys.argv[1])
 print('true' if r.get('success') else 'false')
-PY)"
+PY
+)"
 
 if [[ "${ok}" != "true" ]]; then
   echo "Cloudflare API returned error:" >&2
