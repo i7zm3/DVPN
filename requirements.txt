@@ -1,0 +1,5 @@
+# Python dependencies for dvpn
+# WireGuard tools and root permissions are required on Linux.
+# Install with: pip install -r requirements.txt
+
+cryptography>=41.0.0
